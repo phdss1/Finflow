@@ -1,0 +1,385 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Finflow · Micro</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600&family=Syne:wght@700;800&display=swap" rel="stylesheet" />
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.2/babel.min.js"></script>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: #0D0F14; font-family: 'DM Sans', sans-serif; color: #F0F2F8; }
+  input[type=number]::-webkit-inner-spin-button,
+  input[type=number]::-webkit-outer-spin-button { -webkit-appearance: none; }
+  select option { background: #161922; }
+  @keyframes fadeIn { from { opacity:0; transform:translateY(-8px); } to { opacity:1; transform:translateY(0); } }
+  @keyframes slideUp { from { opacity:0; transform:translateY(16px); } to { opacity:1; transform:translateY(0); } }
+  ::-webkit-scrollbar { width: 4px; }
+  ::-webkit-scrollbar-track { background: #0D0F14; }
+  ::-webkit-scrollbar-thumb { background: #222733; border-radius: 4px; }
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel">
+const { useState, useEffect, useMemo } = React;
+
+const C = {
+  income: "#00C48C", expense: "#FF6B6B", bg: "#0D0F14",
+  card: "#161922", border: "#222733", accent: "#7C6AF7",
+  text: "#F0F2F8", muted: "#6B7280", highlight: "#FFD166",
+};
+
+const CAT_INCOME  = ["Vendas à Vista","Vendas Parceladas","PIX Recebido","Outros"];
+const CAT_EXPENSE = ["Fornecedor","Aluguel","Marketing","Transporte","Salários","Impostos","Utilidades","Outros"];
+const PAYMENTS    = ["Dinheiro","PIX","Cartão Débito","Cartão Crédito","Transferência"];
+const CAT_COLORS  = ["#7C6AF7","#00C48C","#FFD166","#FF6B6B","#4ECDC4","#F7B731","#A55EEA","#26de81","#fd9644","#45aaf2"];
+const STORAGE_KEY = "finflow_v3";
+
+const fmt  = v => new Intl.NumberFormat("pt-BR",{style:"currency",currency:"BRL"}).format(v||0);
+const fmtD = iso => { if(!iso) return ""; const [y,m,d]=iso.split("-"); return `${d}/${m}/${y}`; };
+const today = () => new Date().toISOString().split("T")[0];
+const load  = () => { try { return JSON.parse(localStorage.getItem(STORAGE_KEY)||"{}"); } catch { return {}; } };
+const save  = d  => localStorage.setItem(STORAGE_KEY, JSON.stringify(d));
+
+// ── Mini Bar Chart ─────────────────────────────────────────────
+function BarChart({ data }) {
+  const max = Math.max(...data.map(d => Math.max(d.income, d.expense)), 1);
+  return (
+    <div style={{display:"flex",alignItems:"flex-end",gap:6,height:90,padding:"0 4px"}}>
+      {data.map((d,i) => (
+        <div key={i} style={{flex:1,display:"flex",flexDirection:"column",alignItems:"center",gap:2,height:"100%"}}>
+          <div style={{width:"100%",display:"flex",alignItems:"flex-end",gap:2,height:"100%"}}>
+            <div style={{flex:1,background:C.income,borderRadius:"3px 3px 0 0",height:`${(d.income/max)*100}%`,minHeight:d.income>0?3:0,transition:"height 0.5s"}}/>
+            <div style={{flex:1,background:C.expense,borderRadius:"3px 3px 0 0",height:`${(d.expense/max)*100}%`,minHeight:d.expense>0?3:0,transition:"height 0.5s"}}/>
+          </div>
+          <span style={{fontSize:9,color:C.muted,whiteSpace:"nowrap"}}>{d.label}</span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+// ── Donut Chart ────────────────────────────────────────────────
+function Donut({ segments, size=100 }) {
+  const total = segments.reduce((s,x)=>s+x.value,0);
+  if(!total) return <div style={{width:size,height:size,borderRadius:"50%",background:C.border,display:"flex",alignItems:"center",justifyContent:"center"}}><span style={{color:C.muted,fontSize:10}}>Sem dados</span></div>;
+  let cum = -90;
+  const cx=size/2, cy=size/2, r=size/2-8, ri=r*0.55;
+  const paths = segments.map(seg=>{
+    const angle=(seg.value/total)*360, s=cum*Math.PI/180;
+    cum+=angle;
+    const e=cum*Math.PI/180, large=angle>180?1:0;
+    return {d:`M ${cx+r*Math.cos(s)} ${cy+r*Math.sin(s)} A ${r} ${r} 0 ${large} 1 ${cx+r*Math.cos(e)} ${cy+r*Math.sin(e)} L ${cx+ri*Math.cos(e)} ${cy+ri*Math.sin(e)} A ${ri} ${ri} 0 ${large} 0 ${cx+ri*Math.cos(s)} ${cy+ri*Math.sin(s)} Z`, color:seg.color};
+  });
+  return <svg width={size} height={size}>{paths.map((p,i)=><path key={i} d={p.d} fill={p.color} opacity={0.9}/>)}</svg>;
+}
+
+// ── Shared styles ──────────────────────────────────────────────
+const card  = {background:C.card,border:`1px solid ${C.border}`,borderRadius:16,padding:18};
+const inp   = {background:C.card,border:`1px solid ${C.border}`,borderRadius:10,color:C.text,padding:"11px 14px",fontSize:14,width:"100%",outline:"none",fontFamily:"inherit"};
+const btn   = {border:"none",borderRadius:10,color:"#fff",padding:"10px 18px",fontWeight:600,fontSize:14,cursor:"pointer",fontFamily:"inherit"};
+
+function KPI({label,value,color,icon,sub}){
+  return(
+    <div style={{...card,display:"flex",flexDirection:"column",gap:6}}>
+      <div style={{display:"flex",alignItems:"center",justifyContent:"space-between"}}>
+        <span style={{fontSize:11,color:C.muted,fontWeight:600,textTransform:"uppercase",letterSpacing:.5}}>{label}</span>
+        <span style={{fontSize:18}}>{icon}</span>
+      </div>
+      <div style={{fontSize:22,fontWeight:800,fontFamily:"'Syne',sans-serif",color}}>{value}</div>
+      <div style={{fontSize:11,color:C.muted}}>{sub}</div>
+    </div>
+  );
+}
+
+function Field({label,children}){
+  return(
+    <div>
+      <label style={{fontSize:12,fontWeight:600,color:C.muted,display:"block",marginBottom:6,textTransform:"uppercase",letterSpacing:.5}}>{label}</label>
+      {children}
+    </div>
+  );
+}
+
+function Empty({text="Sem dados para exibir."}){
+  return <div style={{textAlign:"center",color:C.muted,fontSize:13,padding:"24px 0"}}>{text}</div>;
+}
+
+// ── App ────────────────────────────────────────────────────────
+function App() {
+  const stored = load();
+  const [tab,     setTab]     = useState("dashboard");
+  const [entries, setEntries] = useState(stored.entries||[]);
+  const [customCats, setCats] = useState(stored.customCats||{receita:[],despesa:[]});
+  const [form, setForm]       = useState({type:"receita",value:"",description:"",category:"",payment:PAYMENTS[0],date:today()});
+  const [filterMonth, setFM]  = useState(today().slice(0,7));
+  const [filterType,  setFT]  = useState("todos");
+  const [filterCat,   setFC]  = useState("todas");
+  const [newCat, setNewCat]   = useState("");
+  const [catType, setCatType] = useState("receita");
+  const [toast,   setToast]   = useState(null);
+  const [delId,   setDelId]   = useState(null);
+
+  useEffect(()=>{ save({entries,customCats}); },[entries,customCats]);
+
+  const showToast = (msg,type="success") => { setToast({msg,type}); setTimeout(()=>setToast(null),2500); };
+
+  const allIncome  = [...CAT_INCOME,  ...customCats.receita];
+  const allExpense = [...CAT_EXPENSE, ...customCats.despesa];
+  const cats = form.type==="receita" ? allIncome : allExpense;
+
+  const monthEntries = useMemo(()=>entries.filter(e=>e.date.startsWith(filterMonth)),[entries,filterMonth]);
+  const totalIn  = useMemo(()=>monthEntries.filter(e=>e.type==="receita").reduce((s,e)=>s+e.value,0),[monthEntries]);
+  const totalOut = useMemo(()=>monthEntries.filter(e=>e.type==="despesa").reduce((s,e)=>s+e.value,0),[monthEntries]);
+  const profit   = totalIn - totalOut;
+  const margin   = totalIn>0 ? ((profit/totalIn)*100).toFixed(1) : 0;
+
+  const dailyChart = useMemo(()=>{
+    const days={};
+    monthEntries.forEach(e=>{ if(!days[e.date]) days[e.date]={income:0,expense:0}; e.type==="receita"?days[e.date].income+=e.value:days[e.date].expense+=e.value; });
+    return Object.keys(days).sort().slice(-7).map(d=>({label:d.slice(8),income:days[d].income,expense:days[d].expense}));
+  },[monthEntries]);
+
+  const expByCat = useMemo(()=>{
+    const map={};
+    monthEntries.filter(e=>e.type==="despesa").forEach(e=>{ map[e.category]=(map[e.category]||0)+e.value; });
+    return Object.entries(map).map(([cat,value],i)=>({cat,value,color:CAT_COLORS[i%CAT_COLORS.length]}));
+  },[monthEntries]);
+
+  const cashFlow = useMemo(()=>{
+    let acc=0;
+    return [...monthEntries].sort((a,b)=>a.date.localeCompare(b.date)).map(e=>{ acc+=e.type==="receita"?e.value:-e.value; return acc; });
+  },[monthEntries]);
+
+  const filtered = useMemo(()=>entries.filter(e=>{
+    if(!e.date.startsWith(filterMonth)) return false;
+    if(filterType!=="todos"&&e.type!==filterType) return false;
+    if(filterCat!=="todas"&&e.category!==filterCat) return false;
+    return true;
+  }).sort((a,b)=>b.date.localeCompare(a.date)||b.id-a.id),[entries,filterMonth,filterType,filterCat]);
+
+  const submit = () => {
+    if(!form.value||isNaN(Number(form.value))||Number(form.value)<=0) return showToast("Informe um valor válido.","error");
+    if(!form.category) return showToast("Selecione uma categoria.","error");
+    if(!form.description.trim()) return showToast("Adicione uma descrição.","error");
+    setEntries(prev=>[{id:Date.now(),...form,value:parseFloat(form.value)},...prev]);
+    setForm(f=>({...f,value:"",description:"",category:""}));
+    showToast("Lançamento adicionado!");
+  };
+
+  const remove = id => { setEntries(prev=>prev.filter(e=>e.id!==id)); setDelId(null); showToast("Lançamento removido.","error"); };
+
+  const addCat = () => {
+    if(!newCat.trim()) return;
+    setCats(prev=>({...prev,[catType]:[...prev[catType],newCat.trim()]}));
+    showToast(`Categoria "${newCat.trim()}" adicionada!`);
+    setNewCat("");
+  };
+
+  return (
+    <div style={{minHeight:"100vh",background:C.bg,fontFamily:"'DM Sans',sans-serif",color:C.text}}>
+
+      {/* Toast */}
+      {toast && <div style={{position:"fixed",top:20,right:20,zIndex:999,background:toast.type==="error"?C.expense:C.income,color:"#fff",padding:"10px 18px",borderRadius:10,fontWeight:600,fontSize:14,boxShadow:"0 4px 20px rgba(0,0,0,.4)",animation:"fadeIn .2s"}}>{toast.msg}</div>}
+
+      {/* Delete modal */}
+      {delId && (
+        <div style={{position:"fixed",inset:0,background:"rgba(0,0,0,.7)",zIndex:998,display:"flex",alignItems:"center",justifyContent:"center"}}>
+          <div style={{...card,maxWidth:320,width:"90%",textAlign:"center",padding:28}}>
+            <div style={{fontSize:32,marginBottom:10}}>🗑️</div>
+            <p style={{marginBottom:20,color:C.muted}}>Tem certeza que deseja remover este lançamento?</p>
+            <div style={{display:"flex",gap:10,justifyContent:"center"}}>
+              <button onClick={()=>setDelId(null)} style={{...btn,background:C.border,color:C.text}}>Cancelar</button>
+              <button onClick={()=>remove(delId)} style={{...btn,background:C.expense}}>Remover</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Header */}
+      <div style={{borderBottom:`1px solid ${C.border}`,padding:"16px 24px",display:"flex",alignItems:"center",justifyContent:"space-between"}}>
+        <div>
+          <span style={{fontFamily:"'Syne',sans-serif",fontSize:20,fontWeight:800,letterSpacing:-.5}}>finflow</span>
+          <span style={{marginLeft:8,background:C.accent+"33",color:C.accent,fontSize:11,padding:"2px 8px",borderRadius:20,fontWeight:600}}>micro</span>
+        </div>
+        <input type="month" value={filterMonth} onChange={e=>setFM(e.target.value)}
+          style={{background:C.card,border:`1px solid ${C.border}`,borderRadius:8,color:C.text,padding:"6px 12px",fontSize:13,cursor:"pointer"}}/>
+      </div>
+
+      {/* Tabs */}
+      <div style={{display:"flex",borderBottom:`1px solid ${C.border}`,padding:"0 24px",overflowX:"auto"}}>
+        {[["dashboard","📊 Dashboard"],["lancamento","➕ Lançamento"],["historico","📋 Histórico"],["categorias","🏷️ Categorias"]].map(([k,l])=>(
+          <button key={k} onClick={()=>setTab(k)} style={{background:"none",border:"none",color:tab===k?C.accent:C.muted,fontWeight:tab===k?600:400,fontSize:13,padding:"14px 16px",cursor:"pointer",borderBottom:tab===k?`2px solid ${C.accent}`:"2px solid transparent",transition:"color .2s",fontFamily:"inherit",whiteSpace:"nowrap"}}>{l}</button>
+        ))}
+      </div>
+
+      <div style={{padding:"20px 24px",maxWidth:900,margin:"0 auto"}}>
+
+        {/* ── DASHBOARD ── */}
+        {tab==="dashboard" && (
+          <div style={{animation:"slideUp .3s"}}>
+            <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(180px,1fr))",gap:14,marginBottom:20}}>
+              <KPI label="Receitas"     value={fmt(totalIn)}  color={C.income}  icon="📈" sub={`${monthEntries.filter(e=>e.type==="receita").length} lançamentos`}/>
+              <KPI label="Despesas"     value={fmt(totalOut)} color={C.expense} icon="📉" sub={`${monthEntries.filter(e=>e.type==="despesa").length} lançamentos`}/>
+              <KPI label="Lucro Líquido" value={fmt(profit)}  color={profit>=0?C.income:C.expense} icon="💰" sub={profit>=0?"Positivo ✓":"Negativo ⚠️"}/>
+              <KPI label="Margem"       value={`${margin}%`}  color={C.highlight} icon="🎯" sub="do faturamento"/>
+            </div>
+
+            <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(280px,1fr))",gap:14}}>
+              <div style={card}>
+                <h3 style={{fontFamily:"'Syne',sans-serif",fontSize:14,fontWeight:700,marginBottom:14}}>Receitas vs Despesas</h3>
+                <div style={{display:"flex",gap:14,marginBottom:10}}>
+                  <span style={{fontSize:11,color:C.income}}>■ Receita</span>
+                  <span style={{fontSize:11,color:C.expense}}>■ Despesa</span>
+                </div>
+                {dailyChart.length>0 ? <BarChart data={dailyChart}/> : <Empty/>}
+              </div>
+
+              <div style={card}>
+                <h3 style={{fontFamily:"'Syne',sans-serif",fontSize:14,fontWeight:700,marginBottom:14}}>Despesas por Categoria</h3>
+                {expByCat.length>0 ? (
+                  <div style={{display:"flex",alignItems:"center",gap:16}}>
+                    <Donut segments={expByCat} size={100}/>
+                    <div style={{flex:1,display:"flex",flexDirection:"column",gap:6}}>
+                      {expByCat.slice(0,5).map((s,i)=>(
+                        <div key={i} style={{display:"flex",alignItems:"center",gap:6}}>
+                          <span style={{width:8,height:8,borderRadius:2,background:s.color,flexShrink:0}}/>
+                          <span style={{fontSize:11,color:C.muted,flex:1,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{s.cat}</span>
+                          <span style={{fontSize:11,fontWeight:600}}>{fmt(s.value)}</span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                ) : <Empty/>}
+              </div>
+
+              <div style={{...card,gridColumn:"1/-1"}}>
+                <h3 style={{fontFamily:"'Syne',sans-serif",fontSize:14,fontWeight:700,marginBottom:14}}>Fluxo de Caixa Acumulado</h3>
+                {cashFlow.length>1 ? (()=>{
+                  const min=Math.min(...cashFlow,0), max=Math.max(...cashFlow,1), range=max-min||1;
+                  const W=cashFlow.length*40;
+                  const pts=cashFlow.map((v,i)=>`${i*40+20},${70-((v-min)/range)*60}`).join(" ");
+                  const area=`M 20,70 `+cashFlow.map((v,i)=>`L ${i*40+20},${70-((v-min)/range)*60}`).join(" ")+` L ${(cashFlow.length-1)*40+20},70 Z`;
+                  return(
+                    <svg width="100%" height="80" viewBox={`0 0 ${W} 80`} preserveAspectRatio="none">
+                      <defs><linearGradient id="g" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stopColor={C.accent} stopOpacity=".4"/><stop offset="100%" stopColor={C.accent} stopOpacity="0"/></linearGradient></defs>
+                      <path d={area} fill="url(#g)"/>
+                      <polyline points={pts} fill="none" stroke={C.accent} strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"/>
+                      {cashFlow.map((v,i)=><circle key={i} cx={i*40+20} cy={70-((v-min)/range)*60} r="3" fill={C.accent}/>)}
+                    </svg>
+                  );
+                })() : <Empty text="Adicione pelo menos 2 lançamentos para ver o fluxo."/>}
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* ── LANÇAMENTO ── */}
+        {tab==="lancamento" && (
+          <div style={{maxWidth:480,animation:"slideUp .3s"}}>
+            <h2 style={{fontFamily:"'Syne',sans-serif",fontSize:22,fontWeight:800,marginBottom:20}}>Novo Lançamento</h2>
+            <div style={{display:"flex",background:C.card,borderRadius:12,padding:4,marginBottom:18,border:`1px solid ${C.border}`}}>
+              {[["receita","📈 Receita"],["despesa","📉 Despesa"]].map(([v,l])=>(
+                <button key={v} onClick={()=>setForm(f=>({...f,type:v,category:""}))}
+                  style={{flex:1,padding:"10px",borderRadius:9,border:"none",cursor:"pointer",fontWeight:600,fontSize:14,transition:"all .2s",fontFamily:"inherit",
+                    background:form.type===v?(v==="receita"?C.income:C.expense):"transparent",
+                    color:form.type===v?"#fff":C.muted}}>{l}</button>
+              ))}
+            </div>
+            <div style={{display:"flex",flexDirection:"column",gap:14}}>
+              <Field label="Valor (R$)"><input type="number" placeholder="0,00" value={form.value} onChange={e=>setForm(f=>({...f,value:e.target.value}))} style={inp} min="0" step="0.01"/></Field>
+              <Field label="Descrição"><input type="text" placeholder="Ex: Venda de produto X" value={form.description} onChange={e=>setForm(f=>({...f,description:e.target.value}))} style={inp}/></Field>
+              <Field label="Categoria">
+                <select value={form.category} onChange={e=>setForm(f=>({...f,category:e.target.value}))} style={inp}>
+                  <option value="">Selecione...</option>
+                  {cats.map(c=><option key={c} value={c}>{c}</option>)}
+                </select>
+              </Field>
+              <Field label="Forma de Pagamento">
+                <select value={form.payment} onChange={e=>setForm(f=>({...f,payment:e.target.value}))} style={inp}>
+                  {PAYMENTS.map(p=><option key={p} value={p}>{p}</option>)}
+                </select>
+              </Field>
+              <Field label="Data"><input type="date" value={form.date} onChange={e=>setForm(f=>({...f,date:e.target.value}))} style={inp}/></Field>
+              <button onClick={submit} style={{...btn,background:form.type==="receita"?C.income:C.expense,fontSize:15,padding:"14px",marginTop:4}}>✓ Adicionar Lançamento</button>
+            </div>
+          </div>
+        )}
+
+        {/* ── HISTÓRICO ── */}
+        {tab==="historico" && (
+          <div style={{animation:"slideUp .3s"}}>
+            <h2 style={{fontFamily:"'Syne',sans-serif",fontSize:22,fontWeight:800,marginBottom:16}}>Histórico</h2>
+            <div style={{display:"flex",gap:10,marginBottom:16,flexWrap:"wrap"}}>
+              <select value={filterType} onChange={e=>setFT(e.target.value)} style={{...inp,flex:1,minWidth:130}}>
+                <option value="todos">Todos os tipos</option>
+                <option value="receita">Receitas</option>
+                <option value="despesa">Despesas</option>
+              </select>
+              <select value={filterCat} onChange={e=>setFC(e.target.value)} style={{...inp,flex:1,minWidth:160}}>
+                <option value="todas">Todas as categorias</option>
+                {[...allIncome,...allExpense].filter((v,i,a)=>a.indexOf(v)===i).map(c=><option key={c} value={c}>{c}</option>)}
+              </select>
+            </div>
+            {filtered.length===0 ? <Empty text="Nenhum lançamento encontrado para este período."/> : (
+              <div style={{display:"flex",flexDirection:"column",gap:8}}>
+                {filtered.map(e=>(
+                  <div key={e.id} style={{...card,display:"flex",alignItems:"center",gap:12,padding:"14px 16px"}}>
+                    <div style={{width:4,height:40,borderRadius:4,background:e.type==="receita"?C.income:C.expense,flexShrink:0}}/>
+                    <div style={{flex:1,minWidth:0}}>
+                      <div style={{fontWeight:600,fontSize:14,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{e.description}</div>
+                      <div style={{fontSize:11,color:C.muted,marginTop:2}}>{e.category} · {e.payment} · {fmtD(e.date)}</div>
+                    </div>
+                    <div style={{fontWeight:700,fontSize:15,color:e.type==="receita"?C.income:C.expense,flexShrink:0}}>
+                      {e.type==="receita"?"+":"-"}{fmt(e.value)}
+                    </div>
+                    <button onClick={()=>setDelId(e.id)} style={{background:"none",border:"none",cursor:"pointer",color:C.muted,fontSize:16,padding:4}}>🗑</button>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* ── CATEGORIAS ── */}
+        {tab==="categorias" && (
+          <div style={{maxWidth:480,animation:"slideUp .3s"}}>
+            <h2 style={{fontFamily:"'Syne',sans-serif",fontSize:22,fontWeight:800,marginBottom:6}}>Categorias</h2>
+            <p style={{color:C.muted,fontSize:13,marginBottom:20}}>Adicione categorias personalizadas para seus lançamentos.</p>
+            <div style={{...card,marginBottom:24}}>
+              <div style={{display:"flex",gap:8,marginBottom:12}}>
+                {[["receita","Receita"],["despesa","Despesa"]].map(([v,l])=>(
+                  <button key={v} onClick={()=>setCatType(v)} style={{...btn,flex:1,background:catType===v?C.accent:C.border,color:catType===v?"#fff":C.muted,fontSize:13}}>{l}</button>
+                ))}
+              </div>
+              <div style={{display:"flex",gap:8}}>
+                <input value={newCat} onChange={e=>setNewCat(e.target.value)} onKeyDown={e=>e.key==="Enter"&&addCat()} placeholder="Nome da categoria..." style={{...inp,flex:1}}/>
+                <button onClick={addCat} style={{...btn,background:C.accent,padding:"10px 18px"}}>+</button>
+              </div>
+            </div>
+            {[["receita","Receitas",allIncome],["despesa","Despesas",allExpense]].map(([t,l,cats])=>(
+              <div key={t} style={{marginBottom:20}}>
+                <h3 style={{fontSize:13,fontWeight:600,color:C.muted,marginBottom:10,textTransform:"uppercase",letterSpacing:.5}}>{l}</h3>
+                <div style={{display:"flex",flexWrap:"wrap",gap:8}}>
+                  {cats.map((c,i)=>(
+                    <span key={i} style={{background:C.card,border:`1px solid ${C.border}`,borderRadius:20,padding:"5px 14px",fontSize:13}}>{c}</span>
+                  ))}
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+
+      </div>
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App/>);
+</script>
+</body>
+</html>
